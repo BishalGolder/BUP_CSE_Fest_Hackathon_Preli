@@ -11,3 +11,4 @@ htmlcov/
 dist/
 build/
 docs/GridWise_Guide.pdf
+.puku
