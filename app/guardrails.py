@@ -114,24 +114,61 @@ def _validate_one(d: Any, note: str, index: int) -> Dict[str, Any]:
 
     if dtype == "solar_reduction":
         factor = sa.get("factor")
-        if not isinstance(factor, (int, float)):
-            raise GuardrailError(f"directive[{index}].structured_adjustment.factor must be a number")
+        if isinstance(factor, str):
+            s = factor.strip()
+            if s and s.replace(".", "", 1).replace("-", "", 1).isdigit():
+                factor = float(s)
+            else:
+                raise GuardrailError(
+                    f"directive[{index}].factor must be a JSON number "
+                    f"(not the string {factor!r}) in [0,1]."
+                )
+        if not isinstance(factor, (int, float)) or isinstance(factor, bool):
+            raise GuardrailError(
+                f"directive[{index}].structured_adjustment.factor must be a number, "
+                f"got {type(factor).__name__}"
+            )
         if not (0.0 <= float(factor) <= 1.0):
             raise GuardrailError(f"directive[{index}].factor must be in [0,1], got {factor}")
         result["structured_adjustment"]["factor"] = float(factor)
 
     elif dtype == "minimum_battery_reserve":
         mink = sa.get("minimum_energy_kwh")
-        if not isinstance(mink, (int, float)):
-            raise GuardrailError(f"directive[{index}].minimum_energy_kwh must be a number")
+        # Coerce numeric strings ("100", "100.5") to float, but reject
+        # strings with non-numeric suffixes ("50%", "90 kWh").
+        if isinstance(mink, str):
+            s = mink.strip()
+            if s and s.replace(".", "", 1).replace("-", "", 1).isdigit():
+                mink = float(s)
+            else:
+                raise GuardrailError(
+                    f"directive[{index}].minimum_energy_kwh must be a JSON number "
+                    f"(not the string {mink!r}); if the note specifies a percentage, "
+                    "convert to absolute kWh against the battery's capacity_kwh."
+                )
+        if not isinstance(mink, (int, float)) or isinstance(mink, bool):
+            raise GuardrailError(
+                f"directive[{index}].minimum_energy_kwh must be a number, got {type(mink).__name__}"
+            )
         if float(mink) < 0:
             raise GuardrailError(f"directive[{index}].minimum_energy_kwh must be >= 0")
         result["structured_adjustment"]["minimum_energy_kwh"] = float(mink)
 
     elif dtype == "max_grid_window":
         cap = sa.get("max_grid_kwh")
-        if not isinstance(cap, (int, float)):
-            raise GuardrailError(f"directive[{index}].max_grid_kwh must be a number")
+        if isinstance(cap, str):
+            s = cap.strip()
+            if s and s.replace(".", "", 1).replace("-", "", 1).isdigit():
+                cap = float(s)
+            else:
+                raise GuardrailError(
+                    f"directive[{index}].max_grid_kwh must be a JSON number "
+                    f"(not the string {cap!r}); convert any 'kWh' strings to a number."
+                )
+        if not isinstance(cap, (int, float)) or isinstance(cap, bool):
+            raise GuardrailError(
+                f"directive[{index}].max_grid_kwh must be a number, got {type(cap).__name__}"
+            )
         if float(cap) < 0:
             raise GuardrailError(f"directive[{index}].max_grid_kwh must be >= 0")
         result["structured_adjustment"]["max_grid_kwh"] = float(cap)

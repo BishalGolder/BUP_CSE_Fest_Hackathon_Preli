@@ -21,11 +21,17 @@ def _csv(value: str) -> List[str]:
 
 @dataclass
 class Settings:
-    # Provider selection: "openai" | "anthropic" | "google" | "stub"
+    # Provider selection: "openai" | "anthropic" | "google" | "groq" | "stub"
     llm_provider: str = os.getenv("GRIDWISE_LLM_PROVIDER", "stub").lower()
-    llm_api_key: Optional[str] = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+    llm_api_key: Optional[str] = (
+        os.getenv("LLM_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+        or os.getenv("GROQ_API_KEY")
+    )
     llm_model: str = os.getenv("GRIDWISE_LLM_MODEL", "gpt-4o-mini")
     llm_base_url: Optional[str] = os.getenv("GRIDWISE_LLM_BASE_URL")
+    # Provider-specific keys (used by dedicated factories when present).
+    groq_api_key: Optional[str] = os.getenv("GROQ_API_KEY") or os.getenv("LLM_API_KEY")
     llm_timeout_s: float = float(os.getenv("GRIDWISE_LLM_TIMEOUT", "30"))
     llm_max_retries: int = int(os.getenv("GRIDWISE_LLM_MAX_RETRIES", "3"))
 

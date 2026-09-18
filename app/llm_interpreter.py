@@ -50,14 +50,38 @@ class LLMError(RuntimeError):
 SYSTEM_PROMPT = (
     "You are the GridWise directive interpreter for a campus microgrid. "
     "Translate each operator note into exactly ONE structured directive. "
-    "Use the six supported directive types only. "
+    "Use the six supported directive types only: solar_reduction, "
+    "minimum_battery_reserve, no_charge_window, no_discharge_window, "
+    "max_grid_window, no_op. "
     "If a note does not affect today's 24-hour energy schedule, return "
     "directive_type = 'no_op', applies = false, structured_adjustment = null. "
     "Time windows are start-inclusive and end-exclusive, whole-hour. "
     "Example: '1 PM to 3 PM' maps to hours [13, 14] (do not include 15). "
     "solar_reduction.factor is the usable fraction remaining. "
     "An 80% reduction means factor = 0.2 (only 20% remains usable). "
-    "Return JSON only, matching the required schema exactly."
+    "minimum_battery_reserve REQUIRES both 'hours' and 'minimum_energy_kwh'. "
+    "minimum_energy_kwh is an ABSOLUTE kWh number (JSON number type, not a "
+    "string). When the note specifies a percentage like '50% of battery "
+    "capacity', multiply by the battery's capacity_kwh shown later in this "
+    "prompt and emit the resulting kWh as a JSON number. Example: 50% of "
+    "200 kWh capacity -> {\"hours\":[18,19,20],\"minimum_energy_kwh\":100}. "
+    "Never emit strings like \"50%\" or \"90 kWh\". "
+    "max_grid_window REQUIRES both 'hours' and 'max_grid_kwh' (a JSON "
+    "number, not a string). no_charge_window and no_discharge_window "
+    "require only 'hours'. solar_reduction requires both 'hours' and "
+    "'factor' (a JSON number in [0,1]). "
+    "Return ONLY a JSON object (no prose, no markdown). The JSON object "
+    "MUST have a top-level 'directives' array with exactly one entry per "
+    "note, in note_index order. Each entry MUST have these five keys: "
+    "note_index (int), applies (bool), directive_type (one of the six "
+    "above), structured_adjustment (object with 'hours' plus the "
+    "type-specific number field, or null for no_op), and explanation "
+    "(non-empty string). "
+    "Example response: "
+    "{\"directives\":[{\"note_index\":0,\"applies\":true,"
+    "\"directive_type\":\"minimum_battery_reserve\","
+    "\"structured_adjustment\":{\"hours\":[18,19,20],\"minimum_energy_kwh\":100},"
+    "\"explanation\":\"Maintain at least 100 kWh from 6 PM to 9 PM.\"}]}"
 )
 
 # JSON schema used for OpenAI ``response_format`` and equivalent constraints.
@@ -163,6 +187,7 @@ def interpret_notes(
         "openai": _openai_factory,
         "anthropic": _anthropic_factory,
         "google": _google_factory,
+        "groq": _groq_factory,
     }.get(provider)
     if factory is None:
         raise LLMError(f"Unknown LLM provider '{provider}'")
@@ -171,7 +196,7 @@ def interpret_notes(
         if settings.allow_offline:
             log.warning("LLM_API_KEY missing; falling back to stub interpreter.")
             return _stub_interpret(notes, battery)
-        raise LLMError("LLM_API_KEY is required for non-stub providers")
+        raise LLMError("LLM_API_KEY (or provider-specific key, e.g. GROQ_API_KEY) is required for non-stub providers")
 
     call = factory()
     user_prompt = _build_user_prompt(notes)
@@ -193,8 +218,36 @@ def interpret_notes(
             last_err = exc
             log.warning("LLM attempt %d/%d failed: %s",
                         attempt, settings.llm_max_retries, exc)
-            time.sleep(min(2 ** attempt * 0.5, 4.0))
+            # If the error is a 429 / OTPM / TPM rate-limit, respect the
+            # provider's "Please try again in Xs" hint (capped at 65s).
+            # Otherwise use a small exponential backoff.
+            wait_s = _retry_after_seconds(str(exc))
+            if wait_s is None:
+                wait_s = min(2 ** attempt * 0.5, 4.0)
+            else:
+                wait_s = min(wait_s + 1.0, 65.0)
+            time.sleep(wait_s)
     raise LLMError(f"LLM provider failed after {settings.llm_max_retries} retries: {last_err}")
+
+
+def _retry_after_seconds(err_str: str) -> Optional[float]:
+    """Parse a provider's 'Please try again in Xs' / 'Retry-After' hint.
+
+    Returns the seconds to wait, or None if no hint could be parsed.
+    """
+    import re as _re
+    patterns = [
+        _re.compile(r"[Rr]etry[- ][Aa]fter[: ]+([0-9]+(?:\.[0-9]+)?)"),
+        _re.compile(r"try again in ([0-9]+(?:\.[0-9]+)?)s"),
+    ]
+    for p in patterns:
+        m = p.search(err_str)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                pass
+    return None
 
 
 # ---------- Stub (deterministic) ----------
@@ -625,6 +678,55 @@ def _google_factory() -> Callable[[str], str]:
         data = r.json()
         parts = data["candidates"][0]["content"]["parts"]
         return "".join(p.get("text", "") for p in parts)
+
+    return _call
+
+
+def _groq_factory() -> Callable[[str], str]:
+    """Groq Cloud provider (OpenAI-compatible Chat Completions API).
+
+    Reads ``GROQ_API_KEY`` from the environment (falling back to the generic
+    ``LLM_API_KEY`` set in ``Settings.groq_api_key``). The base URL defaults
+    to Groq's public endpoint but can be overridden via ``GRIDWISE_LLM_BASE_URL``
+    for proxies or self-hosted OpenAI-compatible gateways.
+
+    Uses ``response_format={"type":"json_object"}`` (Groq's strict JSON mode),
+    which requires the word "JSON" to appear in the system prompt — the
+    strengthened ``SYSTEM_PROMPT`` already satisfies that.
+    """
+    import httpx
+
+    api_key = settings.groq_api_key or settings.llm_api_key or ""
+    base = (
+        settings.llm_base_url.rstrip("/")
+        if settings.llm_base_url
+        else "https://api.groq.com/openai/v1"
+    )
+    url = f"{base}/chat/completions"
+
+    def _call(user_prompt: str) -> str:
+        body = {
+            "model": settings.llm_model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.0,
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        with httpx.Client(timeout=settings.llm_timeout_s) as client:
+            r = client.post(url, headers=headers, json=body)
+        if r.status_code >= 400:
+            raise LLMError(f"Groq HTTP {r.status_code}: {r.text[:300]}")
+        data = r.json()
+        try:
+            return data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError) as exc:
+            raise LLMError(f"Groq response missing message content: {exc}")
 
     return _call
 
