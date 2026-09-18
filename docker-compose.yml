@@ -1,0 +1,23 @@
+services:
+  gridwise:
+    build: .
+    image: gridwise:latest
+    container_name: gridwise-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      GRIDWISE_LLM_PROVIDER: ${GRIDWISE_LLM_PROVIDER:-stub}
+      GRIDWISE_LLM_MODEL: ${GRIDWISE_LLM_MODEL:-gpt-4o-mini}
+      GRIDWISE_LLM_BASE_URL: ${GRIDWISE_LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      GRIDWISE_LLM_TIMEOUT: ${GRIDWISE_LLM_TIMEOUT:-30}
+      GRIDWISE_LLM_MAX_RETRIES: ${GRIDWISE_LLM_MAX_RETRIES:-3}
+      GRIDWISE_SOLVER_TIME_LIMIT: ${GRIDWISE_SOLVER_TIME_LIMIT:-15}
+      GRIDWISE_LOG_LEVEL: ${GRIDWISE_LOG_LEVEL:-INFO}
+      GRIDWISE_ALLOW_OFFLINE: ${GRIDWISE_ALLOW_OFFLINE:-1}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
