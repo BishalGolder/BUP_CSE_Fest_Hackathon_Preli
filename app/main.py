@@ -119,7 +119,7 @@ async def optimize_energy(request: Request) -> Dict[str, Any]:
     except ValidationError:
         raise
 
-    directives_raw = interpret_notes(scenario.operator_notes)
+    directives_raw = interpret_notes(scenario.operator_notes, battery=scenario.battery)
     directives = validate_directives(directives_raw, scenario.operator_notes)
 
     opt = optimize(scenario, directives)

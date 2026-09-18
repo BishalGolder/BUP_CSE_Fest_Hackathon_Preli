@@ -79,7 +79,7 @@ def _run_one(case: Dict[str, Any], url: Optional[str]) -> Tuple[bool, str]:
         body = r.json()
     else:
         scenario = ScenarioRequest.model_validate(payload)
-        directives_raw = interpret_notes(notes)
+        directives_raw = interpret_notes(notes, battery=scenario.battery)
         directives = validate_directives(directives_raw, notes)
         opt = optimize(scenario, directives)
         body = build_and_validate_response(

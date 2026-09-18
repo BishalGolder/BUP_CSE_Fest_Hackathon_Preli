@@ -132,11 +132,20 @@ def _build_user_prompt(notes: List[str]) -> str:
 
 # ---------- Public entry point ----------
 
-def interpret_notes(notes: List[str]) -> List[Dict[str, Any]]:
+def interpret_notes(
+    notes: List[str],
+    battery: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """Interpret ``notes`` via the configured LLM provider.
 
     Returns a list of dicts (one per note, in order) suitable for the
     deterministic guardrails validator.
+
+    ``battery`` is an optional dict (or Pydantic model with the right
+    fields) carrying ``capacity_kwh`` and ``minimum_energy_kwh``. It is
+    forwarded to the stub so percentage-based reserves
+    ("at least 50% of the battery capacity") can be resolved into an
+    absolute ``minimum_energy_kwh`` value.
 
     Raises ``LLMError`` when no provider can return a usable response.
     """
@@ -148,7 +157,7 @@ def interpret_notes(notes: List[str]) -> List[Dict[str, Any]]:
              provider, settings.llm_model, len(notes))
 
     if provider == "stub":
-        return _stub_interpret(notes)
+        return _stub_interpret(notes, battery)
 
     factory: Optional[Callable[[], Callable[[List[str]], str]]] = {
         "openai": _openai_factory,
@@ -161,7 +170,7 @@ def interpret_notes(notes: List[str]) -> List[Dict[str, Any]]:
     if not settings.llm_api_key:
         if settings.allow_offline:
             log.warning("LLM_API_KEY missing; falling back to stub interpreter.")
-            return _stub_interpret(notes)
+            return _stub_interpret(notes, battery)
         raise LLMError("LLM_API_KEY is required for non-stub providers")
 
     call = factory()
@@ -255,106 +264,249 @@ def _parse_window(text: str) -> Optional[List[int]]:
     return None
 
 
-def _stub_interpret(notes: List[str]) -> List[Dict[str, Any]]:
+def _fraction_word_to_factor(text: str) -> Optional[float]:
+    """Match textual fractions like 'half', 'a quarter', 'two thirds'."""
+    if re.search(r"\bhalf\b|\babout half\b|\broughly half\b", text):
+        return 0.5
+    if re.search(r"\bquarter\b|\ba quarter\b", text):
+        return 0.25
+    if re.search(r"\bthird\b|\ba third\b|\bone third\b", text):
+        return 1.0 / 3.0
+    if re.search(r"\btwo thirds\b", text):
+        return 2.0 / 3.0
+    return None
+
+
+def _stub_interpret(
+    notes: List[str],
+    battery: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """Heuristic, deterministic offline interpreter used only when no real LLM
     is configured. It is intentionally conservative: if no pattern matches,
     it returns ``no_op``. It is clearly marked so guardrails / judges can
     distinguish it from a real LLM interpretation."""
+    # Resolve capacity_kwh from the battery context (Pydantic model or dict).
+    cap_kwh: Optional[float] = None
+    if battery is not None:
+        if hasattr(battery, "capacity_kwh"):
+            cap_kwh = float(getattr(battery, "capacity_kwh"))
+        elif isinstance(battery, dict):
+            v = battery.get("capacity_kwh")
+            if v is not None:
+                cap_kwh = float(v)
+
     out: List[Dict[str, Any]] = []
     for i, note in enumerate(notes):
         n = note.lower()
         win = _parse_window(n) or []
 
-        # Solar reduction (wording variants)
-        m_red = re.search(r"(\d{1,3})\s*%\s*(?:reduction|reduced|reduce|lower|less|drop|down)", n)
-        m_pct = re.search(r"(\d{1,3})\s*%\s*(?:usable|available|of\s*the\s*forecast|of\s*forecast|of\s*the\s*expected|of\s*expected)", n)
-        m_remain = re.search(r"(?:usable|only|leaves?|remaining|remain)\s*(\d{1,3})\s*%", n)
-        if m_red and win:
-            pct = max(0, min(100, int(m_red.group(1))))
-            factor = round((100 - pct) / 100.0, 4)
+        # ---- Solar reduction (wording variants) ----
+        # Pattern A: "X% reduction" / "reduced by X%"
+        m_red = re.search(
+            r"(\d{1,3})\s*%\s*(?:reduction|reduced|reduce|lower|less|drop|down)",
+            n,
+        )
+        # Pattern B: "X% usable/available/of the forecast"
+        m_pct = re.search(
+            r"(\d{1,3})\s*%\s*(?:usable|available|of\s*the\s*forecast|of\s*forecast|of\s*the\s*expected|of\s*expected)",
+            n,
+        )
+        # Pattern C: "leaves/leaves about X%" / "only X%"
+        m_remain = re.search(
+            r"(?:usable|only|leaves?|leaves\s+about|leaves\s+roughly|remaining|remain)\s*(\d{1,3})\s*%",
+            n,
+        )
+        # Pattern D: textual fraction ("half", "quarter", "third")
+        frac = _fraction_word_to_factor(n)
+
+        if win and any(kw in n for kw in ("solar", "panel", "panels", "inverter", "pv")):
+            if m_red:
+                pct = max(0, min(100, int(m_red.group(1))))
+                factor = round((100 - pct) / 100.0, 4)
+                out.append({
+                    "note_index": i,
+                    "applies": True,
+                    "directive_type": "solar_reduction",
+                    "structured_adjustment": {"hours": sorted(set(win)), "factor": factor},
+                    "explanation": f"Stub: {pct}% solar reduction over {sorted(set(win))}.",
+                })
+                continue
+            if m_pct:
+                pct = max(0, min(100, int(m_pct.group(1))))
+                factor = round(pct / 100.0, 4)
+                out.append({
+                    "note_index": i,
+                    "applies": True,
+                    "directive_type": "solar_reduction",
+                    "structured_adjustment": {"hours": sorted(set(win)), "factor": factor},
+                    "explanation": f"Stub: only {pct}% solar usable over {sorted(set(win))}.",
+                })
+                continue
+            if m_remain:
+                pct = max(0, min(100, int(m_remain.group(1))))
+                factor = round(pct / 100.0, 4)
+                out.append({
+                    "note_index": i,
+                    "applies": True,
+                    "directive_type": "solar_reduction",
+                    "structured_adjustment": {"hours": sorted(set(win)), "factor": factor},
+                    "explanation": f"Stub: {pct}% of solar usable over {sorted(set(win))}.",
+                })
+                continue
+            if frac is not None:
+                factor = round(frac, 4)
+                out.append({
+                    "note_index": i,
+                    "applies": True,
+                    "directive_type": "solar_reduction",
+                    "structured_adjustment": {"hours": sorted(set(win)), "factor": factor},
+                    "explanation": (
+                        f"Stub: usable solar reduced to "
+                        f"{int(round(factor * 100))}% over {sorted(set(win))}."
+                    ),
+                })
+                continue
+            if re.search(r"(offline|down|lower|less|reduce|reduced|reduction|unavailable|outage|isolat)", n):
+                out.append({
+                    "note_index": i,
+                    "applies": True,
+                    "directive_type": "solar_reduction",
+                    "structured_adjustment": {"hours": sorted(set(win)), "factor": 0.0},
+                    "explanation": f"Stub: solar unavailable over {sorted(set(win))}.",
+                })
+                continue
+
+        # ---- Minimum battery reserve (must come BEFORE no-charge/discharge
+        # and max-grid checks so percentages and "remain" wordings match) ----
+        # Pattern A: percentage of battery capacity
+        #   "at least 50% of the battery capacity" /
+        #   "keep 50% of the battery" / "50% of capacity" etc.
+        m_pct_cap = re.search(
+            r"(\d{1,3})\s*%\s*(?:of\s*the\s*)?(?:battery\s*)?(?:capacity|stored|charge|energy)",
+            n,
+        )
+        # Pattern B: absolute kWh
+        #   "keep|reserve|minimum|hold|maintain|remain|stay|require X kWh"
+        m_min_kwh = re.search(
+            r"(?:keep|reserve|minimum|hold|maintain|remain|stay|require|requires)\s*"
+            r"(?:at\s*least\s*)?(\d+(?:\.\d+)?)\s*kwh",
+            n,
+        )
+        if win and m_pct_cap and cap_kwh is not None:
+            pct = max(0, min(100, int(m_pct_cap.group(1))))
+            min_kwh = round(cap_kwh * pct / 100.0, 4)
             out.append({
                 "note_index": i,
                 "applies": True,
-                "directive_type": "solar_reduction",
-                "structured_adjustment": {"hours": sorted(set(win)), "factor": factor},
-                "explanation": f"Stub interpreter: {pct}% solar reduction over {win}",
+                "directive_type": "minimum_battery_reserve",
+                "structured_adjustment": {"hours": sorted(set(win)), "minimum_energy_kwh": min_kwh},
+                "explanation": (
+                    f"Stub: {pct}% of {cap_kwh:g} kWh capacity = {min_kwh:g} kWh "
+                    f"reserve over {sorted(set(win))}."
+                ),
             })
             continue
-        if m_pct and win:
-            pct = max(0, min(100, int(m_pct.group(1))))
-            factor = round(pct / 100.0, 4)
+        if win and m_min_kwh:
+            min_kwh = float(m_min_kwh.group(1))
             out.append({
                 "note_index": i,
                 "applies": True,
-                "directive_type": "solar_reduction",
-                "structured_adjustment": {"hours": sorted(set(win)), "factor": factor},
-                "explanation": f"Stub interpreter: only {pct}% solar usable over {win}",
-            })
-            continue
-        if m_remain and win:
-            pct = max(0, min(100, int(m_remain.group(1))))
-            factor = round(pct / 100.0, 4)
-            out.append({
-                "note_index": i,
-                "applies": True,
-                "directive_type": "solar_reduction",
-                "structured_adjustment": {"hours": sorted(set(win)), "factor": factor},
-                "explanation": f"Stub interpreter: {pct}% of solar usable over {win}",
-            })
-            continue
-        if ("solar" in n or "panel" in n or "inverter" in n) and win and re.search(r"(offline|down|lower|less|reduce|reduced|reduction|unavailable)", n):
-            out.append({
-                "note_index": i,
-                "applies": True,
-                "directive_type": "solar_reduction",
-                "structured_adjustment": {"hours": sorted(set(win)), "factor": 0.0},
-                "explanation": f"Stub interpreter: solar unavailable over {win}",
+                "directive_type": "minimum_battery_reserve",
+                "structured_adjustment": {"hours": sorted(set(win)), "minimum_energy_kwh": min_kwh},
+                "explanation": f"Stub: {min_kwh:g} kWh reserve over {sorted(set(win))}.",
             })
             continue
 
-        # Battery charging window
-        if win and re.search(r"(no|neon)?\s*charge|isolated.*charger|charger.*isolat|maintenance.*charger|charger.*maintenance|can.?t charge|cannot charge|charging.*(offline|outage|isolated|down|disabled|unavailable|interrupted)", n):
+        # ---- Max grid window (kWh cap per hour) ----
+        # Wordings: "must not exceed X kWh", "not exceed X kWh",
+        # "no more than X kWh", "stay at or below X kWh",
+        # "limit is X kWh", "grid cap/limit/max X kWh",
+        # "transformer limit", "feeder ... limit", "substation ... constraint"
+        m_cap = re.search(
+            r"(?:grid\s*(?:cap|limit|max|maximum)\s*(?:is|of)?\s*|"
+            r"limit\s*(?:is|of)?\s*|"
+            r"(?:must|should|will|shall)\s*not\s*exceed\s*|"
+            r"not\s*exceed\s*|"
+            r"no\s*more\s*than\s*|"
+            r"at\s*or\s*below\s*|"
+            r"stay\s*at\s*or\s*below\s*|"
+            r"cap\s*(?:of|at)?\s*)"
+            r"(\d+(?:\.\d+)?)\s*kwh",
+            n,
+        )
+        # Also: "grid import must not exceed 155 kWh" - the wording has the
+        # "must not exceed" phrase followed by kWh without an intervening word.
+        m_cap2 = re.search(
+            r"(?:not\s*exceed|exceed|cap|limit|maximum|max)\s*(\d+(?:\.\d+)?)\s*kwh",
+            n,
+        )
+        if win and m_cap:
+            cap = float(m_cap.group(1))
             out.append({
                 "note_index": i,
                 "applies": True,
-                "directive_type": "no_charge_window",
-                "structured_adjustment": {"hours": sorted(set(win))},
-                "explanation": f"Stub interpreter: no charge over {win}",
+                "directive_type": "max_grid_window",
+                "structured_adjustment": {"hours": sorted(set(win)), "max_grid_kwh": cap},
+                "explanation": f"Stub: grid cap {cap:g} kWh over {sorted(set(win))}.",
+            })
+            continue
+        if win and m_cap2:
+            cap = float(m_cap2.group(1))
+            out.append({
+                "note_index": i,
+                "applies": True,
+                "directive_type": "max_grid_window",
+                "structured_adjustment": {"hours": sorted(set(win)), "max_grid_kwh": cap},
+                "explanation": f"Stub: grid cap {cap:g} kWh over {sorted(set(win))}.",
             })
             continue
 
-        # Battery discharging window
-        if win and re.search(r"(no|neon)?\s*discharge|relay test|relay testing|inverter.*test|discharging.*(offline|outage|down|disabled|unavailable|interrupted)", n):
+        # ---- Battery discharging window (checked BEFORE charging because
+        # the substring "no charge" matches inside "no discharge") ----
+        is_discharge_phrase = (
+            re.search(r"\bdischarg", n)
+            or re.search(r"\brelay\s*test", n)
+            or re.search(r"\bdischarging\s*(?:is\s*)?(?:disabled|offline|outage|down|unavailable|interrupted)", n)
+        )
+        if win and is_discharge_phrase:
             out.append({
                 "note_index": i,
                 "applies": True,
                 "directive_type": "no_discharge_window",
                 "structured_adjustment": {"hours": sorted(set(win))},
-                "explanation": f"Stub interpreter: no discharge over {win}",
+                "explanation": f"Stub: no discharge over {sorted(set(win))}.",
             })
             continue
 
-        # Max grid window
-        m_cap = re.search(r"(?:grid\s*(?:cap|limit|max|maximum)|no\s*more\s*than)\s*(\d+(?:\.\d+)?)\s*kwh", n)
-        if m_cap and win:
+        # ---- Battery charging window ----
+        # Wordings: "no charge", "not charge", "charger isolated/disabled/offline",
+        # "charging circuit unavailable", "can't charge", "battery charger will be isolated".
+        # We require at least one explicit context phrase so that notes which
+        # merely mention "charger" in passing don't trip the rule.
+        has_charge_word = (
+            re.search(r"\bcharg(?:e|ing)\b", n)
+            or re.search(r"\bcharger\b", n)
+        )
+        is_charge_phrase = has_charge_word and (
+            not re.search(r"\bdischarg", n)
+        ) and (
+            re.search(r"\bno\s+charge\b", n)
+            or re.search(r"\bnot\s+charge\b", n)
+            or re.search(r"\bcan.?t\s+charge\b", n)
+            or re.search(r"\bcannot\s+charge\b", n)
+            or re.search(r"\bcharger\s+(?:will\s+be|is|are|will|has\s+been|was)\s+(?:disabled|offline|outage|down|isolated|unavailable|interrupted|off)", n)
+            or re.search(r"\bcharger\s+(?:disabled|offline|outage|down|isolated|unavailable|interrupted)", n)
+            or re.search(r"\bcharging\s+(?:is|are|will\s+be|has\s+been|was)\s+(?:disabled|offline|outage|down|isolated|unavailable|interrupted|off)", n)
+            or re.search(r"\bcharging\s+circuit\s+(?:is|will\s+be|will)\s+(?:unavailable|disabled|offline|outage|down|interrupted|isolated)", n)
+            or re.search(r"\bcharging\s+circuit\b", n)
+        )
+        if win and is_charge_phrase:
             out.append({
                 "note_index": i,
                 "applies": True,
-                "directive_type": "max_grid_window",
-                "structured_adjustment": {"hours": sorted(set(win)), "max_grid_kwh": float(m_cap.group(1))},
-                "explanation": f"Stub interpreter: grid cap {m_cap.group(1)} kWh over {win}",
-            })
-            continue
-
-        # Minimum battery reserve
-        m_min = re.search(r"(?:keep|reserve|minimum|hold|maintain)\s*(\d+(?:\.\d+)?)\s*kwh", n)
-        if m_min and win:
-            out.append({
-                "note_index": i,
-                "applies": True,
-                "directive_type": "minimum_battery_reserve",
-                "structured_adjustment": {"hours": sorted(set(win)), "minimum_energy_kwh": float(m_min.group(1))},
-                "explanation": f"Stub interpreter: min reserve {m_min.group(1)} kWh over {win}",
+                "directive_type": "no_charge_window",
+                "structured_adjustment": {"hours": sorted(set(win))},
+                "explanation": f"Stub: no charge over {sorted(set(win))}.",
             })
             continue
 
@@ -363,7 +515,7 @@ def _stub_interpret(notes: List[str]) -> List[Dict[str, Any]]:
             "applies": False,
             "directive_type": "no_op",
             "structured_adjustment": None,
-            "explanation": "Stub interpreter: note does not affect today's energy schedule.",
+            "explanation": "Stub: note does not affect today's energy schedule.",
         })
     return out
 

@@ -10,7 +10,7 @@ with open(r"c:\Users\USER\Desktop\BUP Preli 404 Brain Not Found\BUP_CSE_FEST_202
     data = json.load(f)
 case = data["cases"][0]
 scenario = ScenarioRequest.model_validate(case["input"])
-directives = validate_directives(interpret_notes(case["input"]["operator_notes"]), case["input"]["operator_notes"])
+directives = validate_directives(interpret_notes(case["input"]["operator_notes"], battery=scenario.battery), case["input"]["operator_notes"])
 opt = optimize(scenario, directives)
 print("ours cost:", opt.total_cost_bdt, "grid:", opt.total_grid_kwh, "peak:", opt.peak_grid_kwh)
 print("expected cost:", case["expected_output"]["total_cost_bdt"], "grid:", case["expected_output"]["total_grid_kwh"], "peak:", case["expected_output"]["peak_grid_kwh"])
