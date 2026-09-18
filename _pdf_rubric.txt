@@ -1,0 +1,14 @@
+﻿python : Traceback (most recent call last):
+At line:1 char:1
++ python -c "import fitz; doc=fitz.open(r'f:\BUP_CSE_Fest_Hackathon_Pre ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last) 
+   ::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "<string>", line 1, in <module>
+    import fitz; doc=fitz.open(r'f:\BUP_CSE_Fest_Hackathon_Preli\BUP_CSE_FEST_2
+026_Participant_Guide_&_Evaluation_Rubric_GridWise_LLM.pdf'); [print(f'\n===== 
+PAGE {i+1} =====\n{doc[i].get_text()}') for i in range(len(doc))]
+    ^^^^^^^^^^^
+ModuleNotFoundError: No module named 'fitz'
