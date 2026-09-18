@@ -1,0 +1,14 @@
+LLM attempt 1/3 failed: Groq HTTP 401: {"error":{"message":"Invalid API Key","type":"invalid_request_error","code":"invalid_api_key"}}
+
+LLM attempt 2/3 failed: Groq HTTP 401: {"error":{"message":"Invalid API Key","type":"invalid_request_error","code":"invalid_api_key"}}
+
+LLM attempt 3/3 failed: Groq HTTP 401: {"error":{"message":"Invalid API Key","type":"invalid_request_error","code":"invalid_api_key"}}
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json,sys; sys.path.insert(0,r'F:\BUP_CSE_Fest_Hackathon_Preli'); from app.llm_interpreter import interpret_notes; d=json.load(open(r'F:\BUP_CSE_Fest_Hackathon_Preli\BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json',encoding='utf-8')); c=[x for x in d['cases'] if x['id']=='SAMPLE-03'][0]; print(json.dumps(interpret_notes(c['input']['operator_notes'], battery=c['input']['battery']), indent=2))
+                                                                                                                                                                                                                                                                                                                             ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "F:\BUP_CSE_Fest_Hackathon_Preli\app\llm_interpreter.py", line 218, in interpret_notes
+    raise LLMError(f"LLM provider failed after {settings.llm_max_retries} retries: {last_err}")
+app.llm_interpreter.LLMError: LLM provider failed after 3 retries: Groq HTTP 401: {"error":{"message":"Invalid API Key","type":"invalid_request_error","code":"invalid_api_key"}}
+
