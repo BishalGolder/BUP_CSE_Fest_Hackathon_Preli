@@ -8,8 +8,11 @@ services:
       - "8000:8000"
     environment:
       GRIDWISE_LLM_PROVIDER: ${GRIDWISE_LLM_PROVIDER:-stub}
-      GRIDWISE_LLM_MODEL: ${GRIDWISE_LLM_MODEL:-gpt-4o-mini}
+      GRIDWISE_LLM_MODEL: ${GRIDWISE_LLM_MODEL:-qwen/qwen3.8-27b}
       GRIDWISE_LLM_BASE_URL: ${GRIDWISE_LLM_BASE_URL:-}
+      # Provider-specific keys. Use GROQ_API_KEY for groq, LLM_API_KEY for
+      # openai/anthropic/google. Both are read; whichever is set wins.
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       GRIDWISE_LLM_TIMEOUT: ${GRIDWISE_LLM_TIMEOUT:-30}
       GRIDWISE_LLM_MAX_RETRIES: ${GRIDWISE_LLM_MAX_RETRIES:-3}

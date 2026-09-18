@@ -113,6 +113,9 @@ docker compose up --build
 # API at http://127.0.0.1:8000
 ```
 
+For full build / run / publish instructions (GHCR, Docker Hub, multi-arch,
+digest pinning), see [`docs/DOCKER.md`](docs/DOCKER.md).
+
 The single optimization endpoint is:
 
 ```http

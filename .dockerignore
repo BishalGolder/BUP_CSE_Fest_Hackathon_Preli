@@ -1,0 +1,39 @@
+# ---- secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- editor / tool caches ----
+.puku/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- python ----
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# ---- debug / probe artifacts (do NOT bake into the image) ----
+_*.py
+_*.cmd
+_*.ps1
+_*.err
+_*.out
+_*.sh
+_pdf_*.txt
+RUN_AND_MANUAL_TESTING.txt
+
+# ---- git ----
+.git/
+.gitignore
+.gitattributes
