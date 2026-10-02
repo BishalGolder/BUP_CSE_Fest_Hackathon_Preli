@@ -4,7 +4,7 @@ import urllib.request
 import urllib.error
 
 SAMPLE_FILE = "BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json"
-API_URL = "http://127.0.0.1:8000/optimize-energy"
+API_URL = "https://gridwise-backend-sass.onrender.com/optimize-energy"
 DELAY_SECONDS = 3  # Delay between requests to avoid Groq rate limits
 
 def load_sample_cases(filepath):
