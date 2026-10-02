@@ -195,6 +195,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
+@app.get("/")
+def read_root():
+    return {"message": "GridWise Energy Optimization API is running."}
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
